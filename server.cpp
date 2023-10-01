@@ -7,30 +7,48 @@
 #include <arpa/inet.h>
 #include <netinet/ip.h>
 #include <sys/socket.h>
+#include "common.h"
 
-static void msg(const char *s) {
-    fprintf(stderr, "%s\n", s);
-}
-
-static void die(const char *s) {
-    int err = errno; 
-    fprintf(stderr, "[%d]: %s\n", err, s);
-    abort();
-}
-
-
-static void handle_conn(int connfd) {
-    char rbuf[64] = {};
-    ssize_t rlen = read(connfd, rbuf, sizeof(rbuf) - 1);
-    if (rlen < 0) {
-        msg("read err");
-        return;
+static int32_t single_request(int connfd) {
+    /// 4 bytes header
+    char rbuf[4 + k_max + 1];
+    errno = 0;
+    int32_t err = read_full(connfd, rbuf, 4);
+    if (err) {
+        if (errno == 0) {
+            msg("EOF");
+        } else {
+            msg("read err");
+        }
+        return err;
     }
-    printf("client sayd: %s\n", rbuf);
 
-    char wbuf[] = "world";
-    write(connfd, wbuf, strlen(wbuf));
+    uint32_t len = 0;
+    memcpy(&len, rbuf, 4);
+    if (len > k_max) {
+        msg("too large");
+        return -1;
+    }
+
+    // Request body
+    err = read_full(connfd, &rbuf[4], len);
+    if (err) {
+        msg("read err");
+        return err;
+    }
+
+    rbuf[4 + len] = '\0';
+    printf("client sayd: %s\n", &rbuf[4]);
+
+    // reply 
+    const char reply[] = "world";
+    char wbuf[4 + sizeof(reply)];
+    len = (uint32_t)strlen(reply);
+    memcpy(wbuf, &len, 4);
+    memcpy(&wbuf[4], reply, len);
+    return write_all(connfd, wbuf, 4 + len); 
 }
+
 
 int main() {
     int val = 1;
@@ -65,12 +83,15 @@ int main() {
         socklen_t socklen = sizeof(client_addr);
         int connfd = accept(fd, (struct sockaddr *)&client_addr, &socklen);
         if (connfd < 0) {
-            continue;
+            continue; // skip errors 
         }
 
-        // Handle connection 
-        handle_conn(connfd);
-
+        while(true) {
+            int32_t err = single_request(connfd);
+            if (err) {
+                break;
+            }
+        }
         close(connfd);
     }
 
