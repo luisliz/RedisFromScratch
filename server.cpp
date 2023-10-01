@@ -1,73 +1,16 @@
+#include "conn.h"
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
 #include <unistd.h>
+#include <vector>
+#include <fcntl.h>
+#include <poll.h>
 #include <arpa/inet.h>
 #include <netinet/ip.h>
 #include <sys/socket.h>
-#include "common.h"
-
-// Set fb to non-blocking
-static void fb_set_nb(int fd) {
-    errno = 0;
-    int flags = fcntl(fd, F_GETFL, 0);
-    if (errno) {
-        die("fcntl");
-        return;
-    }
-
-    // Convert to non blocking
-    flags |= O_NONBLOCK;
-
-    errno = 0;
-    (void)fcntl(fd, F_SETFL, flags);
-    if (errno) {
-        die("fcntl");
-    }
-}
-
-static int32_t single_request(int connfd) {
-    /// 4 bytes header
-    char rbuf[4 + k_max + 1];
-    errno = 0;
-    int32_t err = read_full(connfd, rbuf, 4);
-    if (err) {
-        if (errno == 0) {
-            msg("EOF");
-        } else {
-            msg("read err");
-        }
-        return err;
-    }
-
-    uint32_t len = 0;
-    memcpy(&len, rbuf, 4);
-    if (len > k_max) {
-        msg("too large");
-        return -1;
-    }
-
-    // Request body
-    err = read_full(connfd, &rbuf[4], len);
-    if (err) {
-        msg("read err");
-        return err;
-    }
-
-    rbuf[4 + len] = '\0';
-    printf("client sayd: %s\n", &rbuf[4]);
-
-    // reply 
-    const char reply[] = "world";
-    char wbuf[4 + sizeof(reply)];
-    len = (uint32_t)strlen(reply);
-    memcpy(wbuf, &len, 4);
-    memcpy(&wbuf[4], reply, len);
-    return write_all(connfd, wbuf, 4 + len); 
-}
-
 
 int main() {
     int val = 1;
@@ -77,6 +20,9 @@ int main() {
     SOCK_STREAM -> TCP
     0 -> Protocol (0 = default) */
     int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        die("socket");
+    }
 
     /* Socket options 
     SOL_SOCKET -> Socket level
@@ -97,22 +43,52 @@ int main() {
         die("listen");
     }
 
+    // Map of client connections 
+    std::vector<Conn*> fd2conn;
+    fd_set_nb(fd); // Set to non-blocking
+
+    std::vector<struct pollfd> poll_args;
     while (true) {
-        struct sockaddr_in client_addr = {};
-        socklen_t socklen = sizeof(client_addr);
-        int connfd = accept(fd, (struct sockaddr *)&client_addr, &socklen);
-        if (connfd < 0) {
-            continue; // skip errors 
+        poll_args.clear();
+
+        // Set listener as first position
+        struct pollfd pfd = {fd, POLLIN, 0};
+        poll_args.push_back(pfd);
+        for (Conn *conn : fd2conn) {
+            if (!conn) {
+                continue;
+            }
+            struct pollfd pfd = {};
+            pfd.fd = conn->fd;
+            // POLLIN -> Readable
+            // POLLOUT -> Writable
+            pfd.events = (conn->state == STATE_REQ) ? POLLIN : POLLOUT;
+            pfd.events = pfd.events | POLLERR;
+            poll_args.push_back(pfd);
         }
 
-        while(true) {
-            int32_t err = single_request(connfd);
-            if (err) {
-                break;
+        int rv = poll(poll_args.data(), (nfds_t)poll_args.size(), 1000);
+        if (rv < 0) {
+            die("poll");
+        }
+
+        // Process the active connections 
+        for (size_t i = 1; i < poll_args.size(); ++i) {
+            if (poll_args[i].revents) {
+                Conn *conn = fd2conn[poll_args[i].fd];
+                connection_io(conn);
+                if (conn->state == STATE_END) {
+                    fd2conn[conn->fd] = NULL;
+                    (void)close(conn->fd);
+                    free(conn);
+                }
+
             }
         }
-        close(connfd);
-    }
 
+        if (poll_args[0].revents) {
+            (void)accept_new_conn(fd2conn, fd);
+        }
+    }
     return 0;
 }
