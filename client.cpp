@@ -8,6 +8,7 @@
 #include <sys/socket.h>
 #include <netinet/ip.h>
 
+
 static int32_t query(int fd, const char *text) {
     uint32_t len = (uint32_t)strlen(text);
     if (len > k_max) {

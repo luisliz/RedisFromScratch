@@ -9,6 +9,25 @@
 #include <sys/socket.h>
 #include "common.h"
 
+// Set fb to non-blocking
+static void fb_set_nb(int fd) {
+    errno = 0;
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (errno) {
+        die("fcntl");
+        return;
+    }
+
+    // Convert to non blocking
+    flags |= O_NONBLOCK;
+
+    errno = 0;
+    (void)fcntl(fd, F_SETFL, flags);
+    if (errno) {
+        die("fcntl");
+    }
+}
+
 static int32_t single_request(int connfd) {
     /// 4 bytes header
     char rbuf[4 + k_max + 1];
