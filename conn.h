@@ -1,6 +1,7 @@
 // Connection handler for the server
-#include "common.h"
+#include "req.h"
 #include <vector>
+#include <string>
 #include <cstring>
 #include <stdlib.h>
 #include <stdint.h>
@@ -47,8 +48,18 @@ static bool try_one_request(Conn *conn) {
         return false;
     }
 
-    printf("client said: %s\n", &conn->rbuf[4]);
+    uint32_t rescode = 0;
+    uint32_t wlen = 0;
+    int32_t err = do_request(
+        &conn->rbuf[4], len,
+        &rescode, &conn->wbuf[4 + 4], &wlen
+    );
+    if (err) {
+        conn->state = STATE_END;
+        return false;
+    }
 
+    wlen += 4;
     memcpy(&conn->wbuf[0], &len, 4);
     memcpy(&conn->wbuf[4], &conn->rbuf[4], len); // move to read buf
     conn->wbuf_size = 4 + len;
@@ -62,6 +73,7 @@ static bool try_one_request(Conn *conn) {
 
     conn->state = STATE_RESP;
     state_resp(conn);
+    msg("response sent");
 
     // continue outer loop if request was fully processed (try_fill_buffer?)
     return (conn->state == STATE_REQ);
@@ -158,6 +170,7 @@ static void conn_put(std::vector<Conn *> &fd2conn, struct Conn *conn) {
     if(fd2conn.size() <= (size_t)conn->fd) {
         fd2conn.resize(conn->fd + 1);
     }
+    msg("new connection");
     fd2conn[conn->fd] = conn;
 }
 
@@ -182,7 +195,7 @@ static int32_t accept_new_conn(std::vector<Conn *> &fd2conn, int fd) {
     }
 
     conn->fd = connfd;
-    conn-> state = STATE_REQ;
+    conn->state = STATE_REQ;
     conn->rbuf_size = 0;
     conn->wbuf_size = 0;
     conn->wbuf_sent = 0;

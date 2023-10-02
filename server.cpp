@@ -82,7 +82,6 @@ int main() {
                     (void)close(conn->fd);
                     free(conn);
                 }
-
             }
         }
 
